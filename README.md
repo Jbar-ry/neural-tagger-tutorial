@@ -10,3 +10,8 @@ To generate the site, install the Python library `pygments` and run:
 ```
 ./visualise.py tagger.dy.py tagger.pt.py tagger.tf.py > docs/index.html
 ```
+
+### TODO on Fork
+
+- [ ] Try on CoNLLU data
+- [ ] Implement character level embeddings (CNN or LSTM)
