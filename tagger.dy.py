@@ -34,6 +34,9 @@ def main():
     parser.add_argument("--WEIGHT_DECAY", help="part of a rescaling of weights when an update occurs.", required=False, type=int, default=1e-8)
 
     args = parser.parse_args()
+    
+    if args.GLOVE:
+        GLOVE = "../data/glove.6B.100d.txt" # location of glove vectors
 
     train = read_conllu_file(args.trainfile)
     dev = read_conllu_file(args.devfile)
@@ -41,28 +44,26 @@ def main():
     
     ### DEBUG SECTION:
 #    for tokens, tags in train:
-#        print(tokens)
+#        print(tokens, tags)
     
     ###
     
-    # create indices for words and tags
-    # word 2 indices (w2i) and tag 2 indices (t2i)
+    ### Create indices for words and tags
+    ### Each word and tag will have a dictionary mapping from the string to an id/index which will be fed into the model. 
+    ### Build the dictionaries: Word 2 indices (w2i) and tag 2 indices (t2i)
     i2w = [PAD, UNK]
     w2i = {PAD: 0, UNK: 1} # word to index with values for padding and unknown tokens
     i2t = [PAD]
     t2i = {PAD: 0} 
 
-    for tokens, tags in train:# + dev: # was +
-        # build word dictionary
+    ### Iterate through tokens and tags and add a new id for words and tags which are not in our dictionaries
+    for tokens, tags in train:
         for token in tokens:
             token = simplify_token(token)
-            #print(token)
             if token not in w2i:
-                w2i[token] = len(w2i) # count as we see new words
+                w2i[token] = len(w2i) 
                 i2w.append(token)
-        # build tag dictionary
         for tag in tags:
-            #print(tag)
             if tag not in t2i:
                 t2i[tag] = len(t2i)
                 i2t.append(tag)
