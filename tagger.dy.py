@@ -8,61 +8,15 @@ import numpy as np
 
 #### Dynet library imports. The first allows us to configure DyNet from within code rather than on the command line: mem is the amount of system memory initially allocated (DyNet has its own memory management), 
 #### autobatch toggles automatic parallelisation of computations, weight_decay rescales weights by (1 - decay) after every update, random_seed sets the seed for random number generation.
-import dynet_config
-dynet_config.set(mem=256, autobatch=0, weight_decay=WEIGHT_DECAY,random_seed=0)
+#import dynet_config
+#dynet_config.set(mem=256, autobatch=0, weight_decay=WEIGHT_DECAY,random_seed=0)
 # dynet_config.set_gpu() for when we want to run with GPUs
 import dynet as dy 
 
 
-def read_conllu_file(filename): # based off: https://github.com/bplank/bilstm-aux/blob/master/src/lib/mio.py
-    print('loading: ' + filename)
-    current_words = []
-    current_tags = []
-    for line in open(filename):
-        line = line.strip()   
-        if line:
-            if len(line.split('\t')) < 4: # metadata, e.g. lines without the 10 conllu columns
-                if line.startswith('#'): # skip comments
-                    exit
-            else:
-                word, tag = line.split('\t')[1], line.split('\t')[3]
-                current_words.append(word)
-                current_tags.append(tag)
-        else:
-            if current_words: # skip emtpy lines
-                yield (current_words, current_tags)
-            current_words = []
-            current_tags = []
-    # check for last one
-    if current_tags != []:
-        yield (current_words, current_tags)
-        
-
-def simplify_token(token):
-    chars = []
-    for char in token:
-        #### Reduce sparsity by replacing all digits with 0.
-        if char.isdigit():
-            chars.append("0")
-        else:
-            chars.append(char)
-    return ''.join(chars)
-
-class Tagger:
-   def __init__(self, model, args):
-       self.DIM_EMBEDDING = DIM_EMBEDDING
-       self.LSTM_HIDDEN = LSTM_HIDDEN
-       self.BATCH_SIZE = BATCH_SIZE
-       self.LEARNING_RATE = LEARNING_RATE
-       self.LEARNING_DECAY_RATE = LEARNING_DECAY_RATE
-       self.EPOCHS = EPOCHS
-       self.KEEP_PROB = KEEP_PROB
-       self.WEIGHT_DECAY = WEIGHT_DECAY
-       
-
-#def __call__(self, input):
-        # build graph and return exp  
-
+PAD = "__PAD__"
+UNK = "__UNK__"
+    
 
 def main():
     parser = argparse.ArgumentParser(description='POS tagger, default values match Jiang, Liang and Zhang (CoLing 2018).')    
@@ -70,18 +24,15 @@ def main():
     parser.add_argument("--devfile", metavar="FILE", help="Annotated CONLL(U) dev file")
     parser.add_argument("--testfile", metavar="FILE", help="Annotated CONLL(U) test file")
     parser.add_argument("--GLOVE", metavar="FILE", help="location of glove vectors", default="../data/glove.6B.100d.txt")
-    parser.add_argument("--DIM_EMBEDDING", type="int", metavar="INTEGER", help="number of dimensions in our word embeddings", default=100)
-    parser.add_argument("--LSTM_HIDDEN", type="int", metavar="INTEGER", help="number of dimensions in the hidden vectors for the LSTM. Based on NCRFpp (200 in the paper, but 100 per direction in code)", default=100)
-    parser.add_argument("--BATCH_SIZE", type="int", metavar="INTEGER", help="number of examples considered in each model update. ", default=10)
-    parser.add_argument("--LEARNING_RATE", type="int", metavar="INTEGER", help="adjusts how rapidly model parameters change by rescaling the gradient vector.", default=0.015)
-    parser.add_argument("--LEARNING_DECAY_RATE", type="int", metavar="INTEGER", help="part of a rescaling of the learning rate after each pass through the data.", default=0.05)
-    parser.add_argument("--EPOCHS", type="int", metavar="INTEGER", help="number of passes through the data in training.", default=100)
-    parser.add_argument("--KEEP_PROB", type="int", metavar="INTEGER", help="probability of keeping a value when applying dropout.", default=0.5)
-    parser.add_argument("--WEIGHT_DECAY", type="int", metavar="INTEGER", help="part of a rescaling of weights when an update occurs.", default=1e-8)
-        
-    PAD = "__PAD__"
-    UNK = "__UNK__"
-    
+    parser.add_argument("--DIM_EMBEDDING", help="number of dimensions in our word embeddings", required=False, default=100)
+    parser.add_argument("--LSTM_HIDDEN", help="number of dimensions in the hidden vectors for the LSTM. Based on NCRFpp (200 in the paper, but 100 per direction in code)", required=False,type=int, default=100)
+    parser.add_argument("--BATCH_SIZE", help="number of examples considered in each model update.", required=False, type=int, default=10)
+    parser.add_argument("--LEARNING_RATE", help="adjusts how rapidly model parameters change by rescaling the gradient vector.", required=False, type=int, default=0.015)
+    parser.add_argument("--LEARNING_DECAY_RATE", help="part of a rescaling of the learning rate after each pass through the data.", required=False, type=int, default=0.05)
+    parser.add_argument("--EPOCHS", help="number of passes through the data in training.", required=False, type=int, default=100)
+    parser.add_argument("--KEEP_PROB", help="probability of keeping a value when applying dropout.", required=False, type=int, default=0.5)
+    parser.add_argument("--WEIGHT_DECAY", help="part of a rescaling of weights when an update occurs.", required=False, type=int, default=1e-8)
+
     args = parser.parse_args()
 
     train = read_conllu_file(args.trainfile)
@@ -96,7 +47,6 @@ def main():
     
     # create indices for words and tags
     # word 2 indices (w2i) and tag 2 indices (t2i)
-    
     i2w = [PAD, UNK]
     w2i = {PAD: 0, UNK: 1} # word to index with values for padding and unknown tokens
     i2t = [PAD]
@@ -124,7 +74,7 @@ def main():
             
 
     # Load pre-trained GloVe vectors
-    ### I am assuming these are 100-dimensional GloVe embeddings in their standard format.
+    ## I am assuming these are 100-dimensional GloVe embeddings in their standard format.
     pretrained = {}
     for line in open(GLOVE):
         parts = line.strip().split()
@@ -297,13 +247,68 @@ def do_pass(data, w2i, t2i, expressions, train):
 
     return loss, match / total
 
+def read_conllu_file(filename): # based off: https://github.com/bplank/bilstm-aux/blob/master/src/lib/mio.py
+    print('loading: ' + filename)
+    current_words = []
+    current_tags = []
+    for line in open(filename):
+        line = line.strip()   
+        if line:
+            if len(line.split('\t')) < 4: # metadata, e.g. lines without the 10 conllu columns
+                if line.startswith('#'): # skip comments
+                    exit
+            else:
+                word, tag = line.split('\t')[1], line.split('\t')[3]
+                current_words.append(word)
+                current_tags.append(tag)
+        else:
+            if current_words: # skip emtpy lines
+                yield (current_words, current_tags)
+            current_words = []
+            current_tags = []
+    # check for last one
+    if current_tags != []:
+        yield (current_words, current_tags)
+        
+
+def simplify_token(token):
+    chars = []
+    for char in token:
+        #### Reduce sparsity by replacing all digits with 0.
+        if char.isdigit():
+            chars.append("0")
+        else:
+            chars.append(char)
+    return ''.join(chars)
+
+     
+#def __call__(self, input):
+        # build graph and return exp  
+
+
+
+
+
+
+    
+class Tagger(object):
+   def __init__(self, DIM_EMBEDDING, LSTM_HIDDEN, BATCH_SIZE, LEARNING_RATE, \
+                LEARNING_DECAY_RATE, EPOCHS, KEEP_PROB, WEIGHT_DECAY, w2i, t2i, model, args):
+       self.model = dy.ParameterCollection()
+       random.seed(1)
+       self.DIM_EMBEDDING = args.DIM_EMBEDDING
+       self.LSTM_HIDDEN = args.LSTM_HIDDEN
+       self.BATCH_SIZE = args.BATCH_SIZE
+       self.LEARNING_RATE = args.LEARNING_RATE
+       self.LEARNING_DECAY_RATE = args.LEARNING_DECAY_RATE
+       self.EPOCHS = args.EPOCHS
+       self.KEEP_PROB = args.KEEP_PROB
+       self.WEIGHT_DECAY = args.WEIGHT_DECAY
+       
+
+
 if __name__ == '__main__':
-    main()
-    
- 
-
-
-    
+    main()  
     
     
     # experimental code
