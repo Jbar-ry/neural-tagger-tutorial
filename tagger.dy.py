@@ -54,13 +54,13 @@ def main():
             if tag not in t2i:
                 t2i[tag] = len(t2i)
                 i2t.append(tag)        
-        NWORDS = len(w2i)
-        NTAGS = len(t2i)
+#        NWORDS = len(w2i)
+#        NTAGS = len(t2i)
     
     
 class Tagger(object):
     def __init__(self, DIM_EMBEDDING, LSTM_HIDDEN, BATCH_SIZE, LEARNING_RATE, \
-                LEARNING_DECAY_RATE, EPOCHS, KEEP_PROB, WEIGHT_DECAY, w2i, t2i, NWORDS, NTAGS, model, args):
+                LEARNING_DECAY_RATE, EPOCHS, KEEP_PROB, WEIGHT_DECAY, w2i, t2i, NWORDS, NTAGS, pretrained_list, model, args):
         self.model = dy.ParameterCollection()
         random.seed(1)
         self.DIM_EMBEDDING = args.DIM_EMBEDDING
@@ -71,6 +71,61 @@ class Tagger(object):
         self.EPOCHS = args.EPOCHS
         self.KEEP_PROB = args.KEEP_PROB
         self.WEIGHT_DECAY = args.WEIGHT_DECAY
+        self.trainer = dy.SimpleSGDTrainer(self.model, learning_rate= self.LEARNING_RATE, se) # updates model
+        ### DyNet clips gradients by default, which we disable here (this can have a big impact on performance).
+        #trainer.set_clip_threshold(-1)
+        
+        self.NWORDS = len(w2i)
+        self.NTAGS = len(t2i)
+        
+        ### Model creation
+        ### Create word embeddings and initialise
+        ### Lookup parameters are a matrix that supports efficient sparse lookup.
+        self.pEmbedding = self.model.add_lookup_parameters((self.NWORDS, self.DIM_EMBEDDING))
+        self.pEmbedding.init_from_array(np.array(self.pretrained_list))
+
+           
+        self._E = self._model.add_lookup_parameters((self.nwords, 128))
+        self._p_t1 = self._model.add_lookup_parameters((self.ntags, 30))
+        
+        self._pH = self._model.add_parameters((32, 50*2))
+        self._pO = self._model.add_parameters((self.ntags, 32))
+
+        self._fwd_lstm = dynet.LSTMBuilder(1, 128, 50, self._model)
+        self._bwd_lstm = dynet.LSTMBuilder(1, 128, 50, self._model)
+        self._words_batch = []
+        self._tags_batch = []
+        self._minibatch_size = 32     
+        
+        # Create LSTM parameters
+        #### Objects that create LSTM cells and the necessary parameters.
+        stdv = 1.0 / np.sqrt(self.LSTM_HIDDEN) # Needed to match PyTorch
+        self.f_lstm = dy.VanillaLSTMBuilder(1, self.DIM_EMBEDDING, self.LSTM_HIDDEN, self.model,
+                forget_bias=(np.random.random_sample() - 0.5) * 2 * stdv)
+        self.b_lstm = dy.VanillaLSTMBuilder(1, self.DIM_EMBEDDING, self.LSTM_HIDDEN, self.model,
+                forget_bias=(np.random.random_sample() - 0.5) * 2 * stdv)
+        # Create output layer
+        self.pOutput = self.model.add_parameters((self.NTAGS, 2 * self.LSTM_HIDDEN))
+        
+        # Set recurrent dropout values (not used in this case)
+        self.f_lstm.set_dropouts(0.0, 0.0)
+        self.b_lstm.set_dropouts(0.0, 0.0)
+        # Initialise LSTM parameters
+        #### To match PyTorch, we initialise the parameters with an unconventional approach.
+        self.f_lstm.get_parameters()[0][0].set_value(
+                np.random.uniform(-stdv, stdv, [4 * self.LSTM_HIDDEN, self.DIM_EMBEDDING]))
+        self.f_lstm.get_parameters()[0][1].set_value(
+                np.random.uniform(-stdv, stdv, [4 * self.LSTM_HIDDEN, self.LSTM_HIDDEN]))
+        self.f_lstm.get_parameters()[0][2].set_value(
+                np.random.uniform(-stdv, stdv, [4 * self.LSTM_HIDDEN]))
+        self.b_lstm.get_parameters()[0][0].set_value(
+                np.random.uniform(-stdv, stdv, [4 * self.LSTM_HIDDEN, self.DIM_EMBEDDING]))
+        self.b_lstm.get_parameters()[0][1].set_value(
+                np.random.uniform(-stdv, stdv, [4 * self.LSTM_HIDDEN, self.LSTM_HIDDEN]))
+        self.b_lstm.get_parameters()[0][2].set_value(
+                np.random.uniform(-stdv, stdv, [4 * self.LSTM_HIDDEN]))
+        
+
         
         self.EXTERNAL_EMBEDDING = None
         if args.EXT_EMBEDDING is not None:
@@ -78,50 +133,14 @@ class Tagger(object):
             GLOVE = "../data/glove.6B.100d.txt" # location of glove vectors
             print("USING GLOVE EMBEDDINGS FROM {} ".format(GLOVE))
        
-        ### Model creation
-        ### Create word embeddings and initialise
-        ### Lookup parameters are a matrix that supports efficient sparse lookup.
-                
-        pEmbedding = model.add_lookup_parameters((NWORDS, DIM_EMBEDDING))
-        pEmbedding.init_from_array(np.array(pretrained_list))
-        # Create LSTM parameters
-        #### Objects that create LSTM cells and the necessary parameters.
-        stdv = 1.0 / np.sqrt(LSTM_HIDDEN) # Needed to match PyTorch
-        f_lstm = dy.VanillaLSTMBuilder(1, DIM_EMBEDDING, LSTM_HIDDEN, model,
-                forget_bias=(np.random.random_sample() - 0.5) * 2 * stdv)
-        b_lstm = dy.VanillaLSTMBuilder(1, DIM_EMBEDDING, LSTM_HIDDEN, model,
-                forget_bias=(np.random.random_sample() - 0.5) * 2 * stdv)
-        # Create output layer
-        pOutput = model.add_parameters((NTAGS, 2 * LSTM_HIDDEN))
-        
-        # Set recurrent dropout values (not used in this case)
-        f_lstm.set_dropouts(0.0, 0.0)
-        b_lstm.set_dropouts(0.0, 0.0)
-        # Initialise LSTM parameters
-        #### To match PyTorch, we initialise the parameters with an unconventional approach.
-        f_lstm.get_parameters()[0][0].set_value(
-                np.random.uniform(-stdv, stdv, [4 * LSTM_HIDDEN, DIM_EMBEDDING]))
-        f_lstm.get_parameters()[0][1].set_value(
-                np.random.uniform(-stdv, stdv, [4 * LSTM_HIDDEN, LSTM_HIDDEN]))
-        f_lstm.get_parameters()[0][2].set_value(
-                np.random.uniform(-stdv, stdv, [4 * LSTM_HIDDEN]))
-        b_lstm.get_parameters()[0][0].set_value(
-                np.random.uniform(-stdv, stdv, [4 * LSTM_HIDDEN, DIM_EMBEDDING]))
-        b_lstm.get_parameters()[0][1].set_value(
-                np.random.uniform(-stdv, stdv, [4 * LSTM_HIDDEN, LSTM_HIDDEN]))
-        b_lstm.get_parameters()[0][2].set_value(
-                np.random.uniform(-stdv, stdv, [4 * LSTM_HIDDEN]))
+
     
-        #### The trainer object is used to update the model.
-        # Create the trainer
-        trainer = dy.SimpleSGDTrainer(model, learning_rate=LEARNING_RATE)
-        #### DyNet clips gradients by default, which we disable here (this can have a big impact on performance).
-        trainer.set_clip_threshold(-1)
+
     
         #### To make the code match across the three versions, we group together some framework specific values needed when doing a pass over the data.
         expressions = (pEmbedding, pOutput, f_lstm, b_lstm, trainer)
         #### Main training loop, in which we shuffle the data, set the learning rate, do one complete pass over the training data, then evaluate on the development data.
-        for epoch in range(EPOCHS):
+        for epoch in range(self.EPOCHS):
             random.shuffle(train)
     
             ####
@@ -257,10 +276,6 @@ class Tagger(object):
 
 
 
-
-
-
-
 def read_conllu_file(filename): # based off: https://github.com/bplank/bilstm-aux/blob/master/src/lib/mio.py
     print('loading: ' + filename)
     current_words = []
@@ -306,42 +321,4 @@ def simplify_token(token):
 if __name__ == '__main__':
     main()  
     
-    
-    # experimental code
-    
-    #def read_conllu_file(filename):
-#    """ Usage: Read in a CoNLLU file and extract words and tags from columns.
-#    
-#    word1    tag1
-#    ...      ...
-#    wordN    tagN """
-#    
-#    print('loading: ' + filename)
-#    
-#    content = []
-#    
-#    with open(filename) as data_src:
-#        for line in data_src:
-#            #print("SAMPLE CONLLU LINE {} ".format(line))
-#            line = line.strip()
-#            #print("LINE STRIPPED BY SPACE {} ".format(line))
-#            #print(line)
-#            if line:
-#                if len(line.split('\t')) < 4: # metadata
-#                    if line[0] == '#': # source text
-#                        exit # continue
-#                else:
-#                    token, tag = line.split('\t')[1], line.split('\t')[3]
-#                    #print(token, tag)
-#                    ### t_p = [w.split("|") for w in line.strip().split()]
-#                    content.append((token, tag))
-#                    print(content)
-#            else: 
-#                if content:
-#                    yield(content)
-#                    #print(content)
-#                content = []
-#        #check for last one
-#        if content != []:
-#            yield content
-#            #print(content)
+
