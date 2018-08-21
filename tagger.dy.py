@@ -76,6 +76,7 @@ class Bi_Tagger(object):
         self.t2i = t2i
         self.NWORDS = len(w2i)
         self.NTAGS = len(t2i)
+        self.tokens_batch = []
         
         # dimension sizes
         self.DIM_EMBEDDING = args.DIM_EMBEDDING
@@ -148,6 +149,7 @@ class Bi_Tagger(object):
 #        O = dy.paramter(self.pOutput)
         
         # For each output, calculate the output and loss
+        predicted=[]
         pred_tags=[]
         for f, b, t in zip(f_lstm_output, reversed(b_lstm_output), tag_ids):
             # Combine the outputs.
@@ -167,12 +169,16 @@ class Bi_Tagger(object):
             chosen = np.argmax(r_t.npvalue())
             pred_tags.append(chosen)
         predicted.append(pred_tags)
+        
+            # alternatively, could try:
+            # chosen = dy.softmax(r_t)
+            # pred_tags.append(self.i2w[np.argmax(chosen,npvalue())])
             
                         
 
 #    def predict_batch(self, words_batch):
 #        dy.renew_cg()
-#        length = max(len(words) for words in words_batch)
+#        length = max(len(tokens) for tokens in tokens_batch)
         
         
         #### To make the code match across the three versions, we group together some framework specific values needed when doing a pass over the data.
@@ -205,19 +211,15 @@ class Bi_Tagger(object):
 
 
 
-    def evaluate(self, train, predicted_tags):
-        """
-        Compute accuraccy on a dev/test file
-        """
-        correct = 0
-        total = 0.0
-        
-        if predicted_tags != None:
+#    def evaluate(self, train, predicted_tags):
+#        """
+#        Compute accuraccy on a dev/test file
+#        """
+#        correct = 0
+#        total = 0.0
+#        
+#        if predicted_tags != None:
             
-        
-    
-        
-        
         
     #### Inference (the same function for train and test).
     def do_pass(data, w2i, t2i, expressions, train):
