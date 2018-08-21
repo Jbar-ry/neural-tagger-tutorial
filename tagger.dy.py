@@ -60,8 +60,9 @@ def build_vocab(train, dev):
         NWORDS = len(w2i)
         NTAGS = len(t2i)
         return(tokens, tags, w2i, t2i, NWORDS, NTAGS)
-        
-                
+  
+      
+### Encapsulate the parameters in a class, as per Yoav's suggestion.                
 class Bi_Tagger(object):
     def __init__(self, tokens, tags, DIM_EMBEDDING, LSTM_HIDDEN, BATCH_SIZE, LEARNING_RATE, \
                 LEARNING_DECAY_RATE, EPOCHS, KEEP_PROB, WEIGHT_DECAY, w2i, t2i, NWORDS, NTAGS, pretrained_list, model, args):
@@ -103,9 +104,9 @@ class Bi_Tagger(object):
                 forget_bias=(np.random.random_sample() - 0.5) * 2 * stdv)
         self.b_lstm = dy.VanillaLSTMBuilder(1, self.DIM_EMBEDDING, self.LSTM_HIDDEN, self.model,
                 forget_bias=(np.random.random_sample() - 0.5) * 2 * stdv)
+        
         # Create output layer
         self.pOutput = self.model.add_parameters((self.NTAGS, 2 * self.LSTM_HIDDEN))
-        
         
         # Set recurrent dropout values (not used in this case)
         self.f_lstm.set_dropouts(0.0, 0.0)
@@ -125,29 +126,53 @@ class Bi_Tagger(object):
         self.b_lstm.get_parameters()[0][2].set_value(
                 np.random.uniform(-stdv, stdv, [4 * self.LSTM_HIDDEN]))
         
-
+        
+    ### Build computation graph and return expression
     def __call__(self, tokens, tags):
         dy.renew_cg()
-        #### Convert tokens and tags from strings to numbers using the indices.                   
+        
+        ### Convert tokens and tags from strings to numbers using the indices.                   
         token_ids = [self.w2i.get(simplify_token(t), 0) for t in tokens] 
         tag_ids = [t2i[t] for t in tags]
     
         wembs = [dy.lookup(self.pEmbedding, w) for w in token_ids]
         rev_embs = reversed(wembs)
-        # Apply dropout
-        if train:
-            wembs = [dy.dropout(w, 1.0 - KEEP_PROB) for w in wembs]
- 
+        
         f_init = self.f_lstm.initial_state()
         b_init = self.b_lstm.initial_state()
         
-        f_lstm_output = [x.output() for x in f_init.add_inputs(wembs)]  
+        f_lstm_output = [x.output() for x in f_init.add_inputs(wembs)]  # take the output vectors from the cell state at each step. 
         b_lstm_output = [x.output() for x in b_init.add_inputs(rev_embs)]
         
+#        H = dy.parameter(self.LSTM_HIDDEN) # initialise paramaters differently
+#        O = dy.paramter(self.pOutput)
+        
+        # For each output, calculate the output and loss
+        pred_tags=[]
+        for f, b, t in zip(f_lstm_output, reversed(b_lstm_output), tag_ids):
+            # Combine the outputs.
+            combined = dy.concatenate([f,b])
+            # Apply dropout
+            if train:
+                wembs = [dy.dropout(w, 1.0 - self.KEEP_PROB) for w in wembs]
+            # Matrix multiply to get scores for each tag
+            r_t = self.pOutput * combined            
+            # Calculate cross-entropy loss
+            if train:
+                err = dy.pickneglogsoftmax(r_t, t)
+                #### We are not actually evaluating the loss values here, instead we collect them together in a list. This enables DyNet's <a href="http://dynet.readthedocs.io/en/latest/tutorials_notebooks/Autobatching.html">autobatching</a>.
+                loss_expressions.append(err)
+            # Calculate the highest scoring tag
+            #### This call to .npvalue() will lead to evaluation of the graph and so we don't actually get the benefits of autobatching. With some refactoring we could get the benefit back (simply keep the r_t expressions around and do this after the update), but that would have complicated this code.
+            chosen = np.argmax(r_t.npvalue())
+            pred_tags.append(chosen)
+        predicted.append(pred_tags)
+            
+                        
 
-    def predict_batch(self, words_batch):
-        dy.renew_cg()
-        length = max(len(words) for words in words_batch)
+#    def predict_batch(self, words_batch):
+#        dy.renew_cg()
+#        length = max(len(words) for words in words_batch)
         
         
         #### To make the code match across the three versions, we group together some framework specific values needed when doing a pass over the data.
@@ -178,11 +203,22 @@ class Bi_Tagger(object):
         _, test_acc = do_pass(dev, w2i, t2i, expressions, False)
         print("Test Accuracy: {:.3f}".format(test_acc))
 
-#def __call__(self, input):
-        # build graph and return exp  
 
 
+    def evaluate(self, train, predicted_tags):
+        """
+        Compute accuraccy on a dev/test file
+        """
+        correct = 0
+        total = 0.0
+        
+        if predicted_tags != None:
+            
+        
     
+        
+        
+        
     #### Inference (the same function for train and test).
     def do_pass(data, w2i, t2i, expressions, train):
         pEmbedding, pOutput, f_lstm, b_lstm, trainer = expressions
