@@ -3,17 +3,13 @@ import random       # shuffle data
 import sys          # flushing output
 import numpy as np  # handle data vectors
 
-#### Dynet library imports. The first allows us to configure DyNet from within code rather than on the command line: mem is the amount of system memory initially allocated (DyNet has its own memory management), 
-#### autobatch toggles automatic parallelisation of computations, weight_decay rescales weights by (1 - decay) after every update, random_seed sets the seed for random number generation.
 #import dynet_config
 #dynet_config.set(mem=256, autobatch=0, weight_decay=WEIGHT_DECAY,random_seed=0)
 # dynet_config.set_gpu() for when we want to run with GPUs
 import dynet as dy 
-
-
+    
 PAD = "__PAD__"
 UNK = "__UNK__"
-    
 
 def main():
     parser = argparse.ArgumentParser(description='POS tagger, default values match Jiang, Liang and Zhang (CoLing 2018).')    
@@ -35,16 +31,23 @@ def main():
     train = read_conllu_file(args.trainfile)
     dev = read_conllu_file(args.devfile)
     
+    tokens, tags, w2i, t2i, NWORDS, NTAGS = build_vocab(train, dev)
     
-    ### Build the dictionaries: Word 2 indices (w2i) and tag 2 indices (t2i).
+    tagger = Bi_Tagger(tokens, tags, w2i, t2i, args)
+
+    
+def build_vocab(train, dev):    
+    ### Build the dictionaries: Word2indices (w2i) and tag2indices (t2i).
     ### Each word and tag will have a dictionary mapping from the string to an id/index which will be fed into the model. 
-    i2w = [PAD, UNK]
-    w2i = {PAD: 0, UNK: 1} # word to index with values for padding and unknown tokens
+    ### We also construct inverse dictionaries i2w/t for outputting word/tag predictions.
+    ### We need to train good representations for UNK (unknown words) as we will encounter many UNK words at test time.
+    i2w = [PAD, UNK] 
+    w2i = {PAD: 0, UNK: 1} # word to index with values for padding and unknown/OOV tokens
     i2t = [PAD]
     t2i = {PAD: 0} 
         
-    ### Iterate through tokens and tags and add a new id for words and tags which are not in our dictionaries
-    for tokens, tags in train:
+    ### Iterate through tokens and tags and assign the next integer id for words and tags which we have not seen yet in our dictionaries.
+    for tokens, tags in train + dev:
         for token in tokens:
             token = simplify_token(token)
             if token not in w2i:
@@ -53,16 +56,27 @@ def main():
         for tag in tags:
             if tag not in t2i:
                 t2i[tag] = len(t2i)
-                i2t.append(tag)        
-#        NWORDS = len(w2i)
-#        NTAGS = len(t2i)
-    
-    
-class Tagger(object):
-    def __init__(self, DIM_EMBEDDING, LSTM_HIDDEN, BATCH_SIZE, LEARNING_RATE, \
+                i2t.append(tag)      
+        NWORDS = len(w2i)
+        NTAGS = len(t2i)
+        return(tokens, tags, w2i, t2i, NWORDS, NTAGS)
+        
+                
+class Bi_Tagger(object):
+    def __init__(self, tokens, tags, DIM_EMBEDDING, LSTM_HIDDEN, BATCH_SIZE, LEARNING_RATE, \
                 LEARNING_DECAY_RATE, EPOCHS, KEEP_PROB, WEIGHT_DECAY, w2i, t2i, NWORDS, NTAGS, pretrained_list, model, args):
         self.model = dy.ParameterCollection()
         random.seed(1)
+        
+        # adding lots of params for now
+        self.tokens = tokens
+        self.tags = tags
+        self.w2i = w2i
+        self.t2i = t2i
+        self.NWORDS = len(w2i)
+        self.NTAGS = len(t2i)
+        
+        # dimension sizes
         self.DIM_EMBEDDING = args.DIM_EMBEDDING
         self.LSTM_HIDDEN = args.LSTM_HIDDEN
         self.BATCH_SIZE = args.BATCH_SIZE
@@ -71,31 +85,16 @@ class Tagger(object):
         self.EPOCHS = args.EPOCHS
         self.KEEP_PROB = args.KEEP_PROB
         self.WEIGHT_DECAY = args.WEIGHT_DECAY
-        self.trainer = dy.SimpleSGDTrainer(self.model, learning_rate= self.LEARNING_RATE, se) # updates model
+        self.trainer = dy.SimpleSGDTrainer(self.model, learning_rate=self.LEARNING_RATE) # updates model
         ### DyNet clips gradients by default, which we disable here (this can have a big impact on performance).
         #trainer.set_clip_threshold(-1)
-        
-        self.NWORDS = len(w2i)
-        self.NTAGS = len(t2i)
-        
+
         ### Model creation
         ### Create word embeddings and initialise
         ### Lookup parameters are a matrix that supports efficient sparse lookup.
         self.pEmbedding = self.model.add_lookup_parameters((self.NWORDS, self.DIM_EMBEDDING))
         self.pEmbedding.init_from_array(np.array(self.pretrained_list))
-
-           
-        self._E = self._model.add_lookup_parameters((self.nwords, 128))
-        self._p_t1 = self._model.add_lookup_parameters((self.ntags, 30))
         
-        self._pH = self._model.add_parameters((32, 50*2))
-        self._pO = self._model.add_parameters((self.ntags, 32))
-
-        self._fwd_lstm = dynet.LSTMBuilder(1, 128, 50, self._model)
-        self._bwd_lstm = dynet.LSTMBuilder(1, 128, 50, self._model)
-        self._words_batch = []
-        self._tags_batch = []
-        self._minibatch_size = 32     
         
         # Create LSTM parameters
         #### Objects that create LSTM cells and the necessary parameters.
@@ -106,6 +105,7 @@ class Tagger(object):
                 forget_bias=(np.random.random_sample() - 0.5) * 2 * stdv)
         # Create output layer
         self.pOutput = self.model.add_parameters((self.NTAGS, 2 * self.LSTM_HIDDEN))
+        
         
         # Set recurrent dropout values (not used in this case)
         self.f_lstm.set_dropouts(0.0, 0.0)
@@ -126,17 +126,30 @@ class Tagger(object):
                 np.random.uniform(-stdv, stdv, [4 * self.LSTM_HIDDEN]))
         
 
+    def __call__(self, tokens, tags):
+        dy.renew_cg()
+        #### Convert tokens and tags from strings to numbers using the indices.                   
+        token_ids = [self.w2i.get(simplify_token(t), 0) for t in tokens] 
+        tag_ids = [t2i[t] for t in tags]
+    
+        wembs = [dy.lookup(self.pEmbedding, w) for w in token_ids]
+        rev_embs = reversed(wembs)
+        # Apply dropout
+        if train:
+            wembs = [dy.dropout(w, 1.0 - KEEP_PROB) for w in wembs]
+ 
+        f_init = self.f_lstm.initial_state()
+        b_init = self.b_lstm.initial_state()
         
-        self.EXTERNAL_EMBEDDING = None
-        if args.EXT_EMBEDDING is not None:
-            self.get_external_embeddings(args.EXTERNAL_EMBEDDING)
-            GLOVE = "../data/glove.6B.100d.txt" # location of glove vectors
-            print("USING GLOVE EMBEDDINGS FROM {} ".format(GLOVE))
-       
+        f_lstm_output = [x.output() for x in f_init.add_inputs(wembs)]  
+        b_lstm_output = [x.output() for x in b_init.add_inputs(rev_embs)]
+        
 
-    
-
-    
+    def predict_batch(self, words_batch):
+        dy.renew_cg()
+        length = max(len(words) for words in words_batch)
+        
+        
         #### To make the code match across the three versions, we group together some framework specific values needed when doing a pass over the data.
         expressions = (pEmbedding, pOutput, f_lstm, b_lstm, trainer)
         #### Main training loop, in which we shuffle the data, set the learning rate, do one complete pass over the training data, then evaluate on the development data.
@@ -148,11 +161,11 @@ class Tagger(object):
             trainer.learning_rate = LEARNING_RATE / (1+ LEARNING_DECAY_RATE * epoch)
     
             #### Training pass.
-            loss, tacc = do_pass(train, w2i, t2i, expressions, True,
+            loss, train_acc = do_pass(train, w2i, t2i, expressions, True,
                     current_lr)
             #### Dev pass.
-            _, dacc = do_pass(dev, w2i, t2i, expressions, False)
-            print("{} loss {} t-acc {} d-acc {}".format(epoch, loss, tacc, dacc))
+            _, dev_acc = do_pass(dev, w2i, t2i, expressions, False)
+            print("{} loss {} train-acc {} dev-acc {}".format(epoch, loss, train_acc, dev_acc))
     
         #### The syntax varies, but in all three cases either saving or loading the parameters of a model must be done after the model is defined.
         # Save model
@@ -164,6 +177,11 @@ class Tagger(object):
         # Evaluation pass.
         _, test_acc = do_pass(dev, w2i, t2i, expressions, False)
         print("Test Accuracy: {:.3f}".format(test_acc))
+
+#def __call__(self, input):
+        # build graph and return exp  
+
+
     
     #### Inference (the same function for train and test).
     def do_pass(data, w2i, t2i, expressions, train):
@@ -179,6 +197,9 @@ class Tagger(object):
             batch = data[start : start + BATCH_SIZE]
             batch.sort(key = lambda x: -len(x[0]))
             start += BATCH_SIZE
+#            self._words_batch = []
+#            self._tags_batch = []
+#            self._minibatch_size = 32    
             #### Log partial results so we can conveniently check progress.
             if start % 4000 == 0:
                 print(loss, match / total)
@@ -273,6 +294,12 @@ class Tagger(object):
                         random_vector = np.random.uniform(-scale, scale, [DIM_EMBEDDING])
                         pretrained_list.append(random_vector)
                 return(pretrained_list)
+                
+#        self.EXTERNAL_EMBEDDING = None
+#        if args.EXT_EMBEDDING is not None:
+#            self.get_external_embeddings(args.EXTERNAL_EMBEDDING)
+#            GLOVE = "../data/glove.6B.100d.txt" # location of glove vectors
+#            print("USING GLOVE EMBEDDINGS FROM {} ".format(GLOVE))
 
 
 
@@ -310,15 +337,6 @@ def simplify_token(token):
             chars.append(char)
     return ''.join(chars)
 
-     
-#def __call__(self, input):
-        # build graph and return exp  
-
-
-   
-
 
 if __name__ == '__main__':
     main()  
-    
-
