@@ -6,6 +6,12 @@ import numpy as np  # handle data vectors
 #import dynet_config
 #dynet_config.set(mem=256, autobatch=0, weight_decay=WEIGHT_DECAY,random_seed=0)
 # dynet_config.set_gpu() for when we want to run with GPUs
+
+# I am trying to encapsulate the params in a class and make other functions accordingly.
+# I am mainly following https://github.com/IndicoDataSolutions/spaCy/blob/master/examples/spacy_dynet_lstm.py as a tutorial on how to do this.
+# *Work in Progress*
+
+
 import dynet as dy 
     
 PAD = "__PAD__"
@@ -34,7 +40,43 @@ def main():
     tokens, tags, w2i, t2i, NWORDS, NTAGS = build_vocab(train, dev)
     
     tagger = Bi_Tagger(tokens, tags, w2i, t2i, args)
+    
+    # training loop/ evaluation
+#    loss = 0
+#    match = 0
+#    total = 0
+#    start = 0    
+#    for iter in range(100): # change this later to epochs from command line
+#        random.shuffle(train)
+#        while start < len(train):
+#            batch = data[start: start + args.BATCH_SIZE]
+#            batch.sort(key = lambda x: -len(x[0]))
+#            start += args.BATCH_SIZE
+#            if start % 4000 == 0:
+#                tagger.trainer.status()
+#                print(loss, match / total)
+#                sys.stdout.flush()        
+        
+        
+        
+        
+# combine the losses for the batch, do an update, and record the loss
 
+#loss_for_batch = dy.esum(loss_expressions)
+#loss_for_batch.backward()
+#trainer.update()
+#loss += loss_for_batch.scalar_value()
+#
+#####
+## Update the number of correct tags and total tags
+#for (_, g), a in zip(batch, predicted):
+#total += len(g)
+#for gt, at in zip(g, a):
+#gt = t2i[gt]
+#if gt == at:
+#match += 1
+#
+#return loss, match / total        
     
 def build_vocab(train, dev):    
     ### Build the dictionaries: Word2indices (w2i) and tag2indices (t2i).
@@ -64,6 +106,7 @@ def build_vocab(train, dev):
       
 ### Encapsulate the parameters in a class, as per Yoav's suggestion.                
 class Bi_Tagger(object):
+    
     def __init__(self, tokens, tags, DIM_EMBEDDING, LSTM_HIDDEN, BATCH_SIZE, LEARNING_RATE, \
                 LEARNING_DECAY_RATE, EPOCHS, KEEP_PROB, WEIGHT_DECAY, w2i, t2i, NWORDS, NTAGS, pretrained_list, model, args):
         self.model = dy.ParameterCollection()
@@ -77,6 +120,7 @@ class Bi_Tagger(object):
         self.NWORDS = len(w2i)
         self.NTAGS = len(t2i)
         self.tokens_batch = []
+        self.tags_batch = []
         
         # dimension sizes
         self.DIM_EMBEDDING = args.DIM_EMBEDDING
@@ -94,7 +138,7 @@ class Bi_Tagger(object):
         ### Model creation
         ### Create word embeddings and initialise
         ### Lookup parameters are a matrix that supports efficient sparse lookup.
-        self.pEmbedding = self.model.add_lookup_parameters((self.NWORDS, self.DIM_EMBEDDING))
+        self.pEmbedding = self.model.add_lookup_parameters((self.NWORDS, self.DIM_EMBEDDING)) # pre-trained embeddings from GloVe
         self.pEmbedding.init_from_array(np.array(self.pretrained_list))
         
         
@@ -134,7 +178,7 @@ class Bi_Tagger(object):
         
         ### Convert tokens and tags from strings to numbers using the indices.                   
         token_ids = [self.w2i.get(simplify_token(t), 0) for t in tokens] 
-        tag_ids = [t2i[t] for t in tags]
+        tag_ids = [self.t2i[t] for t in tags]
     
         wembs = [dy.lookup(self.pEmbedding, w) for w in token_ids]
         rev_embs = reversed(wembs)
@@ -144,12 +188,8 @@ class Bi_Tagger(object):
         
         f_lstm_output = [x.output() for x in f_init.add_inputs(wembs)]  # take the output vectors from the cell state at each step. 
         b_lstm_output = [x.output() for x in b_init.add_inputs(rev_embs)]
-        
-#        H = dy.parameter(self.LSTM_HIDDEN) # initialise paramaters differently
-#        O = dy.paramter(self.pOutput)
-        
+    
         # For each output, calculate the output and loss
-        predicted=[]
         pred_tags=[]
         for f, b, t in zip(f_lstm_output, reversed(b_lstm_output), tag_ids):
             # Combine the outputs.
@@ -163,26 +203,98 @@ class Bi_Tagger(object):
             if train:
                 err = dy.pickneglogsoftmax(r_t, t)
                 #### We are not actually evaluating the loss values here, instead we collect them together in a list. This enables DyNet's <a href="http://dynet.readthedocs.io/en/latest/tutorials_notebooks/Autobatching.html">autobatching</a>.
-                loss_expressions.append(err)
+                loss_expressions.append(err) # this needs to be created elsewhere.
             # Calculate the highest scoring tag
             #### This call to .npvalue() will lead to evaluation of the graph and so we don't actually get the benefits of autobatching. With some refactoring we could get the benefit back (simply keep the r_t expressions around and do this after the update), but that would have complicated this code.
             chosen = np.argmax(r_t.npvalue())
             pred_tags.append(chosen)
-        predicted.append(pred_tags)
-        
-            # alternatively, could try:
-            # chosen = dy.softmax(r_t)
-            # pred_tags.append(self.i2w[np.argmax(chosen,npvalue())])
+            return(pred_tags)
             
-                        
-
-#    def predict_batch(self, words_batch):
-#        dy.renew_cg()
-#        length = max(len(tokens) for tokens in tokens_batch)
+            #return expression
+   
+            # alternatively, could try:
+            # out = dy.softmax(r_t)
+            # pred_tags.append(self.i2w[np.argmax(chosen,npvalue())])
+                                  
+    # similar functions to spacy's
+    def predict_batch(self, words_batch):
+        dy.renew_cg()
+        length = max(len(tokens) for tokens in self.BATCH_SIZE)
         
+        
+    def pipe(self, sentences):
+        batch = []
+        for words in sentences:
+            batch.append(words)
+            if len(batch) == self.BATCH_SIZE:
+                tags_batch = self.predict_batch(batch)
+                for words, tags in zip(batch, tags_batch):
+                    yield tags
+                batch = []
+                
+    def update(self, words, tags):
+        self.tokens_batch.append(words)
+        self.tags_batch.append(tags)
+        if len(self.tokens_batch) == self.BATCH_SIZE:
+            loss = self.update_batch(self.tokens_batch, self.tags_batch)
+            self.tokens_batch = []
+            self.tags_batch = []
+        else:
+            loss = 0
+        return(loss)
+            
+            
+    def update_batch(self, batch): # try just add in one batch argument and separate the words and tags after.
+        dy.renew_cg()
+        ### Convert tokens and tags from strings to numbers using the indices.
+        for n, (tokens, tags) in enumerate(batch):
+            token_ids = [self.w2i.get(simplify_token(t), 0) for t in tokens]
+            tag_ids = [self.t2i[t] for t in tags]
+            
+        wembs = [dy.lookup(self.pEmbedding, w) for w in token_ids]
+        rev_embs = reversed(wembs)
+        
+        f_init = self.f_lstm.initial_state()
+        b_init = self.b_lstm.initial_state()
+        
+        f_lstm_output = [x.output() for x in f_init.add_inputs(wembs)]  # take the output vectors from the cell state at each step. 
+        b_lstm_output = [x.output() for x in b_init.add_inputs(rev_embs)]
+        
+        
+        errs = []
+        for f, b, t in zip(f_lstm_output, reversed(b_lstm_output), tag_ids):
+            # Combine the outputs.
+            combined = dy.concatenate([f,b])
+            r_t = self.pOutput * combined  
+            err = dy.pickneglogsoftmax_batch(r_t, tag_ids[i])
+            errs.append(dy.sum_batches(err))
+        sum_errs = dynet.esum(errs)
+        squared = -sum_errs # * sum_errs
+        losses = sum_errs.scalar_value()
+        sum_errs.backward()
+        self.trainer.update()
+        return losses
+
+        
+        
+        
+        
+#                if len(loss) == 0:
+#            self._init_cg(train=True)
+#            return 0.
+#
+#        loss = esum(loss) * (1. / self._batch_size)
+#        ret = loss.scalar_value()
+#        loss.backward()
+#        self._trainer.update()
+#        self._steps += 1
+#        self._init_cg(train=True)
+    
+         
         
         #### To make the code match across the three versions, we group together some framework specific values needed when doing a pass over the data.
         expressions = (pEmbedding, pOutput, f_lstm, b_lstm, trainer)
+        
         #### Main training loop, in which we shuffle the data, set the learning rate, do one complete pass over the training data, then evaluate on the development data.
         for epoch in range(self.EPOCHS):
             random.shuffle(train)
@@ -306,11 +418,9 @@ class Bi_Tagger(object):
                     if gt == at:
                         match += 1
     
-        return loss, match / total        
+        return loss, match / total 
+        #match / total is a generic accuracy metric that is used for train, dev, and test cases.        
         
-        
-             
-             
         def get_external_embeddings(self, DIM_EMBEDDING, external_embedding_file):
             ### Load pre-trained GloVe vectors (100-d)
             pretrained = {}
@@ -340,7 +450,6 @@ class Bi_Tagger(object):
 #            print("USING GLOVE EMBEDDINGS FROM {} ".format(GLOVE))
 
 
-
 def read_conllu_file(filename): # based off: https://github.com/bplank/bilstm-aux/blob/master/src/lib/mio.py
     print('loading: ' + filename)
     current_words = []
@@ -364,7 +473,6 @@ def read_conllu_file(filename): # based off: https://github.com/bplank/bilstm-au
     if current_tags != []:
         yield (current_words, current_tags)
         
-
 def simplify_token(token):
     chars = []
     for char in token:
@@ -374,7 +482,6 @@ def simplify_token(token):
         else:
             chars.append(char)
     return ''.join(chars)
-
 
 if __name__ == '__main__':
     main()  
