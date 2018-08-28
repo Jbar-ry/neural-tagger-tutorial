@@ -2,12 +2,78 @@ import dynet as dy  # NN library
 import random       # shuffle data
 import sys          # flushing output
 import numpy as np  # handle data vectors
+from collections import Counter # count word/tag indices
+
 
 """
 DyNet Bi-LSTM tagger tutorial
 From: http://www.phontron.com/slides/emnlp2016-dynet-tutorial-part2.pdf
+      https://github.com/clab/dynet/blob/master/examples/tagger/bilstmtagger.py
 """
 
+train_file="/home/jbarry/ud-treebanks-v2.2/UD_English-EWT/en_ewt-ud-train.conllu"
+test_file="/home/jbarry/ud-treebanks-v2.2/UD_English-EWT/en_ewt-ud-dev.conllu"
+
+class Vocab:
+    def __init__(self, w2i):
+        self.w2i = dict(w2i)
+        self.i2w = {i:w for w,i in w2i.items()}
+
+    @classmethod
+    def from_corpus(cls, corpus):
+        w2i = {}
+        for sent in corpus:
+            for word in sent:
+                w2i.setdefault(word, len(w2i))
+        return Vocab(w2i)
+
+    def size(self):
+        return len(self.w2i.keys())
+    
+    
+def read(filename):
+    sent = []
+    for line in open(filename):
+        line = line.strip()# .split() # maybe remove split.
+        if line:
+            if len(line.split('\t')) < 4: # metadata, e.g. lines without the 10 conllu columns
+                if line.startswith('#'): # skip comments
+                    exit
+            else:
+                w, p = line.split('\t')[1], line.split('\t')[3]
+                sent.append((w,p))
+            # may need to add more control here...
+                
+train = list(read(train_file))
+dev = list(read(test_file))
+words = []
+tags = []
+wc = Counter()
+for s in train:
+    for w,p in s:
+        words.append(w)
+        tags.append(p)
+        wc[w]+=1
+words.append("_UNK_")
+tags.append("_START_")
+
+for s in test:
+    for w,p in s:
+        words.append(w)
+
+# Vocab is a class 
+vw = util.Vocab.from_corpus([words])
+vt = util.Vocab.from_corpus([tags])
+UNK = vw.w2i["_UNK_"]
+
+nwords = vw.size()
+ntags = vt.size()
+
+model = dy.Model() # ParameterCollection() for Dy 2+?
+trainer = dy.SimpleSGDTrainer(model)
+
+
+                
 def word_rep(w, cf_init, cb_init):
     if wc[w] > 5:    
         w_index = vw.w2i[w]
